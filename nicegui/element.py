@@ -6,9 +6,9 @@ import weakref
 from collections.abc import Iterator, Sequence
 from copy import copy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, cast
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Generic, cast
 
-from typing_extensions import Self
+from typing_extensions import Self, TypeVar
 
 from . import core, events, helpers, json, storage
 from .awaitable_response import AwaitableResponse, NullResponse
@@ -39,7 +39,10 @@ TAG_CHAR = TAG_START_CHAR + r'|-|\.|[0-9]|\u00B7|[\u0300-\u036F]|[\u203F-\u2040]
 TAG_PATTERN = re.compile(fr'^({TAG_START_CHAR})({TAG_CHAR})*$')
 
 
-class Element(Visibility):
+T = TypeVar('T', default=Any)
+
+
+class Element(Visibility, Generic[T]):
     component: Component | None = None
     exposed_libraries: ClassVar[list[Library]] = []
     _default_props: ClassVar[dict[str, Any]] = {}
@@ -340,7 +343,7 @@ class Element(Visibility):
 
     def on(self,
            type: str,  # pylint: disable=redefined-builtin
-           handler: events.Handler[events.GenericEventArguments] | None = None,
+           handler: events.Handler[events.GenericEventArguments[T]] | None = None,
            args: None | Sequence[str] | Sequence[Sequence[str] | None] = None,
            *,
            throttle: float = 0.0,

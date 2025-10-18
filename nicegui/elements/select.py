@@ -1,27 +1,26 @@
-from collections.abc import Generator, Iterable, Iterator
-from copy import deepcopy
+from collections.abc import Iterable
 from typing import Any, Callable, Literal, Optional, Union
 
 from ..events import GenericEventArguments, Handler, ValueChangeEventArguments
-from .choice_element import ChoiceElement
+from .choice_element import ChoiceElement, T
 from .mixins.disableable_element import DisableableElement
 from .mixins.label_element import LabelElement
 from .mixins.validation_element import ValidationDict, ValidationElement, ValidationFunction
 
 
-class Select(LabelElement, ValidationElement, ChoiceElement, DisableableElement, component='select.js'):
+class Select(LabelElement, ValidationElement[tuple[T, ...]], ChoiceElement[T, Union[dict[str, Any], str, list[Union[dict[str, Any], str]]]], DisableableElement, component='select.js'):
 
     def __init__(self,
-                 options: Union[list, dict], *,
+                 options: Iterable[T], *,
                  label: Optional[str] = None,
-                 value: Any = None,
-                 on_change: Optional[Handler[ValueChangeEventArguments]] = None,
+                 selected: tuple[T, ...] = (),
+                 on_change: Optional[Handler[ValueChangeEventArguments[tuple[T, ...]]]] = None,
                  with_input: bool = False,
                  new_value_mode: Optional[Literal['add', 'add-unique', 'toggle']] = None,
+                 new_val_to_option: Optional[Callable[['Select[T]', str], Optional[T]]] = None,
                  multiple: bool = False,
                  clearable: bool = False,
-                 validation: Optional[Union[ValidationFunction, ValidationDict]] = None,
-                 key_generator: Optional[Union[Callable[[Any], Any], Iterator[Any]]] = None,
+                 validation: Optional[Union[ValidationFunction[tuple[T, ...]], ValidationDict[tuple[T, ...]]]] = None,
                  ) -> None:
         """Dropdown Selection
 
@@ -51,27 +50,18 @@ class Select(LabelElement, ValidationElement, ChoiceElement, DisableableElement,
         :param multiple: whether to allow multiple selections
         :param clearable: whether to add a button to clear the selection
         :param validation: dictionary of validation rules or a callable that returns an optional error message (default: None for no validation)
-        :param key_generator: a callback or iterator to generate a dictionary key for new values
         """
+        if not multiple and len(selected) > 1:
+            raise ValueError(f'Too many values passed to selected. You passed {selected} and multiple is {multiple}.')
         self.multiple = multiple
-        if multiple:
-            if value is None:
-                value = []
-            elif not isinstance(value, list):
-                value = [value]
-            else:
-                value = value[:]  # NOTE: avoid modifying the original list which could be the list of options (#3014)
-        super().__init__(label=label, options=options, value=value, on_change=on_change, validation=validation)
-        if isinstance(key_generator, Generator):
-            next(key_generator)  # prime the key generator, prepare it to receive the first value
-        self.key_generator = key_generator
-        if new_value_mode is not None:
-            if isinstance(options, dict) and new_value_mode == 'add' and key_generator is None:
-                raise ValueError('new_value_mode "add" is not supported for dict options without key_generator')
+        self.new_value_mode = new_value_mode
+        super().__init__(label=label, options=options, value=selected, on_change=on_change, validation=validation)
+        if self.new_value_mode is not None:
             self._props['new-value-mode'] = new_value_mode
             with_input = True
+            assert new_val_to_option is not None, 'new_val_to_option must be passed when new_value_mode is not None.'
+            self._new_val_to_option = new_val_to_option
         if with_input:
-            self.original_options = deepcopy(options)
             self._props['use-input'] = True
             self._props['hide-selected'] = not multiple
             self._props['fill-input'] = True
@@ -88,90 +78,45 @@ class Select(LabelElement, ValidationElement, ChoiceElement, DisableableElement,
         """Whether the options popup is currently shown."""
         return self._is_showing_popup
 
-    def _event_args_to_value(self, e: GenericEventArguments) -> Any:
+    def _event_args_to_value(self, e: GenericEventArguments[Union[dict[str, Any], str, list[Union[dict[str, Any], str]]]]) -> tuple[T, ...]:
         # pylint: disable=too-many-nested-blocks
-        if self.multiple:
-            if e.args is None:
-                return []
-            else:
-                if self._props.get('new-value-mode') == 'add-unique':
-                    # handle issue #4896: eliminate duplicate arguments
-                    for arg1 in [a for a in e.args if isinstance(a, str)]:
-                        for arg2 in [a for a in e.args if isinstance(a, dict)]:
-                            if arg1 == arg2['label']:
-                                e.args.remove(arg1)
-                                break
-                args = [self._values[arg['value']] if isinstance(arg, dict) else arg for arg in e.args]
-                for arg in e.args:
-                    if isinstance(arg, str):
-                        self._handle_new_value(arg)
-                return [arg for arg in args if arg in self._values]
-        else:  # noqa: PLR5501
-            if e.args is None:
-                return None
-            else:  # noqa: PLR5501
-                if isinstance(e.args, str):
-                    new_value = self._handle_new_value(e.args)
-                    return new_value if new_value in self._values else None
-                else:
-                    return self._values[e.args['value']]
-
-    def _value_to_model_value(self, value: Any) -> Any:
-        # pylint: disable=no-else-return
-        if self.multiple:
-            result = []
-            for item in value or []:
-                try:
-                    index = self._values.index(item)
-                    result.append({'value': index, 'label': self._labels[index]})
-                except ValueError:
-                    pass
-            return result
+        if isinstance(e.args, dict):
+            return (self._index_to_option[e.args['id']],)
+        if isinstance(e.args, str) and self.new_value_mode:
+            new_option = self._new_val_to_option(self, e.args)
+            if new_option and (new_val := self._handle_new_value(new_option)):
+                return (new_val,)
+            return ()
         else:
-            try:
-                index = self._values.index(value)
-                return {'value': index, 'label': self._labels[index]}
-            except ValueError:
-                return None
+            args: list[T] = []
+            for a in e.args:
+                if isinstance(a, str) and self.new_value_mode and (new_option := self._new_val_to_option(self, a)):
+                    if (new_val := self._handle_new_value(new_option)):
+                        args.append(new_val)
+                elif isinstance(a, dict):
+                    args.append(self._index_to_option[a['id']])
+            if self.new_value_mode == 'add-unique':
+                args = list({o.value: o for o in args}.values())
+                # ^ handle issue #4896: eliminate duplicate arguments
+            return tuple(args)
 
-    def _generate_key(self, value: str) -> Any:
-        if isinstance(self.key_generator, Generator):
-            return self.key_generator.send(value)
-        if isinstance(self.key_generator, Iterable):
-            return next(self.key_generator)
-        if callable(self.key_generator):
-            return self.key_generator(value)
-        return value
-
-    def _handle_new_value(self, value: str) -> Any:
-        mode = self._props['new-value-mode']
-        if isinstance(self.options, list):
-            if mode == 'add':
+    def _handle_new_value(self, value: T) -> Optional[T]:
+        mode = self.new_value_mode
+        if mode == 'add':
+            self.options.append(value)
+        elif mode == 'add-unique':
+            if value.value not in [o.value for o in self.options]:
                 self.options.append(value)
-            elif mode == 'add-unique':
-                if value not in self.options:
-                    self.options.append(value)
-            elif mode == 'toggle':
-                if value in self.options:
-                    self.options.remove(value)
-                else:
-                    self.options.append(value)
-            # NOTE: self._labels and self._values are updated via self.options since they share the same references
-            return value
-        else:
-            key = value
-            if mode == 'add':
-                key = self._generate_key(value)
-                self.options[key] = value
-            elif mode == 'add-unique':
-                if value not in self.options.values():
-                    key = self._generate_key(value)
-                    self.options[key] = value
-            elif mode == 'toggle':
-                if value in self.options:
-                    self.options.pop(value)
-                else:
-                    key = self._generate_key(value)
-                    self.options.update({key: value})
-            self._update_values_and_labels()
-            return key
+        elif mode == 'toggle':
+            if value.value in [o.value for o in self.options]:
+                self.options = [o for o in self.options if o.value != value.value]
+            else:
+                self.options.append(value)
+        self._update_values_and_labels()
+        self._update_options()
+        return value if value.value in self._values else None
+
+    def _value_to_model_value(self, value: tuple[T, ...]) -> Union[tuple[T, ...], T]:
+        if self.multiple:
+            return tuple(v for v in value if v in self.options)
+        return value[0] if len(value) > 0 else value

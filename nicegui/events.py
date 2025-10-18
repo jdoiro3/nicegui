@@ -4,12 +4,14 @@ import asyncio
 from collections.abc import Awaitable, Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, Generic, Literal, TypeVar, Union, cast
 
 from . import background_tasks, core, helpers
 from .awaitable_response import AwaitableResponse
 from .dataclasses import KWONLY_SLOTS
 from .slot import Slot
+
+T = TypeVar('T')
 
 if TYPE_CHECKING:
     from .client import Client
@@ -36,8 +38,8 @@ class UiEventArguments(EventArguments):
 
 
 @dataclass(**KWONLY_SLOTS)
-class GenericEventArguments(UiEventArguments):
-    args: Any
+class GenericEventArguments(UiEventArguments, Generic[T]):
+    args: T
 
 
 @dataclass(**KWONLY_SLOTS)
@@ -129,9 +131,9 @@ class MultiUploadEventArguments(UiEventArguments):
 
 
 @dataclass(**KWONLY_SLOTS)
-class ValueChangeEventArguments(UiEventArguments):
-    value: Any
-    previous_value: Any = ...
+class ValueChangeEventArguments(UiEventArguments, Generic[T]):
+    value: T
+    previous_value: T | None = None
 
     def __post_init__(self):
         # DEPRECATED: previous_value will be required in NiceGUI 4.0
